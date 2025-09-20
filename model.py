@@ -38,6 +38,35 @@ base_architecture_to_features = {'resnet18': resnet18_features,
 
 @gin.configurable(allowlist=['bottleneck_stride', 'patch_classification'])
 class PPNet(nn.Module):
+    """
+    =============================================================================
+    PPNET - PROTOTYPE-BASED SEGMENTATION MODEL
+    =============================================================================
+    
+    PURPOSE:
+        ProtoPNet (Prototype-based Network) for semantic segmentation.
+        This model learns prototype vectors that represent characteristic features
+        of each class and uses them for pixel-wise classification.
+    
+    ARCHITECTURE:
+        1. Feature Backbone: CNN (ResNet, VGG, DenseNet, DeepLab)
+        2. Add-on Layers: Convolutional layers to process features
+        3. Prototype Layer: Learnable prototype vectors
+        4. Classification Layer: Maps prototype activations to class predictions
+    
+    KEY COMPONENTS:
+        - prototype_vectors: Learnable feature vectors representing class characteristics
+        - prototype_class_identity: Maps each prototype to its assigned class
+        - add_on_layers: Convolutional layers between backbone and prototypes
+        - last_layer: Final classification layer
+    
+    TRAINING PHASES:
+        - Phase 0: Train prototypes and add-on layers (backbone frozen)
+        - Phase 1: Joint training of all components
+        - Phase 2: Fine-tune only the last classification layer
+    
+    =============================================================================
+    """
     def __init__(self, features, img_size, prototype_shape,
                  proto_layer_rf_info, num_classes, init_weights=True,
                  prototype_activation_function='log',
@@ -46,87 +75,156 @@ class PPNet(nn.Module):
                  patch_classification: bool = False):
 
         super(PPNet, self).__init__()
-        self.img_size = img_size
-        self.epsilon = 1e-4
-        self.bottleneck_stride = bottleneck_stride
-        self.patch_classification = patch_classification
+        
+        # =============================================================================
+        # INITIALIZATION - STORE CONFIGURATION PARAMETERS
+        # =============================================================================
+        self.img_size = img_size                                    # Input image size
+        self.epsilon = 1e-4                                        # Small value for numerical stability
+        self.bottleneck_stride = bottleneck_stride                  # Stride for bottleneck layers
+        self.patch_classification = patch_classification            # Whether using patch classification
 
+        # =============================================================================
+        # PROTOTYPE VECTORS - LEARNABLE FEATURE REPRESENTATIONS
+        # =============================================================================
+        # Create learnable prototype vectors that represent characteristic features
+        # Shape: (num_prototypes, feature_dim, height, width)
+        # These are the core components that learn to represent class features
         self.prototype_vectors = nn.Parameter(torch.rand(prototype_shape), requires_grad=True)
 
-        # prototype_activation_function could be 'log', 'linear',
-        # or a generic function that converts distance to similarity score
+        # =============================================================================
+        # PROTOTYPE ACTIVATION FUNCTION
+        # =============================================================================
+        # Function to convert distance to similarity score
+        # Options: 'log', 'linear', or custom function
         self.prototype_activation_function = prototype_activation_function
 
-        '''
-        Here we are initializing the class identities of the prototypes
-        Without domain specific knowledge we allocate the same number of
-        prototypes for each class
-        '''
-        # a onehot indication matrix for each prototype's class identity
-        self.prototype_class_identity = torch.zeros(self.num_prototypes,
-                                                    num_classes)
+        # =============================================================================
+        # PROTOTYPE CLASS IDENTITY - MAPPING PROTOTYPES TO CLASSES
+        # =============================================================================
+        # Initialize class identities for prototypes
+        # Without domain knowledge, allocate equal number of prototypes per class
+        # This creates a one-hot matrix indicating which class each prototype belongs to
+        
+        # Create one-hot matrix: [num_prototypes, num_classes]
+        self.prototype_class_identity = torch.zeros(self.num_prototypes, num_classes)
 
+        # Calculate prototypes per class (equal distribution)
         num_prototypes_per_class = self.num_prototypes // self.num_classes
+        
+        # Assign prototypes to classes in blocks
         for i in range(self.num_classes):
-            self.prototype_class_identity[i * num_prototypes_per_class:(i + 1) * num_prototypes_per_class, i] = 1
+            start_idx = i * num_prototypes_per_class
+            end_idx = (i + 1) * num_prototypes_per_class
+            self.prototype_class_identity[start_idx:end_idx, i] = 1
 
+        # Ensure equal distribution is possible
         assert self.num_prototypes % self.num_classes == 0
 
         self.num_prototypes_per_class = num_prototypes_per_class
         self.proto_layer_rf_info = proto_layer_rf_info
 
-        # this has to be named features to allow the precise loading
+        # =============================================================================
+        # FEATURE BACKBONE - CNN FEATURE EXTRACTOR
+        # =============================================================================
+        # Store the backbone network (ResNet, VGG, DenseNet, DeepLab, etc.)
+        # This extracts features from input images
+        # Must be named 'features' for proper model loading/saving
         self.features = features
 
+        # =============================================================================
+        # DETERMINE INPUT CHANNELS FOR ADD-ON LAYERS
+        # =============================================================================
+        # Different backbone architectures have different output channel configurations
+        # We need to determine the number of channels from the backbone to connect add-on layers
+        
         features_name = str(self.features).upper()
         if features_name.startswith('VGG') or features_name.startswith('RES'):
+            # VGG and ResNet: Get channels from last convolutional layer
             first_add_on_layer_in_channels = \
                 [i for i in features.modules() if isinstance(i, nn.Conv2d)][-1].out_channels
         elif features_name.startswith('DENSE'):
+            # DenseNet: Get channels from last BatchNorm layer
             first_add_on_layer_in_channels = \
                 [i for i in features.modules() if isinstance(i, nn.BatchNorm2d)][-1].num_features
         elif features_name.startswith('DEEPLAB'):
+            # DeepLab: Get channels from second-to-last convolutional layer
             first_add_on_layer_in_channels = \
                 [i for i in features.modules() if isinstance(i, nn.Conv2d)][-2].out_channels
         elif features_name.startswith('MSC'):
+            # Multi-scale: Get channels from backbone's second-to-last conv layer
             first_add_on_layer_in_channels = \
                 [i for i in features.base.modules() if isinstance(i, nn.Conv2d)][-2].out_channels
         else:
             raise Exception(f'{features_name[:10]} base_architecture NOT implemented')
 
+        # =============================================================================
+        # ADD-ON LAYERS - CONVOLUTIONAL LAYERS BETWEEN BACKBONE AND PROTOTYPES
+        # =============================================================================
+        # These layers process backbone features before prototype matching
+        # They adapt the feature representation for prototype-based classification
+        
         add_on_layers = []
 
         if add_on_layers_type == 'bottleneck_pool':
-            # Add conv net with stride to get the target number of patches (16x8)
+            # Add convolutional layer with stride to reduce spatial dimensions
+            # Used to get target number of patches (e.g., 16x8)
             add_on_layers.append(nn.Conv2d(in_channels=first_add_on_layer_in_channels,
                                            out_channels=first_add_on_layer_in_channels,
                                            kernel_size=3, padding=1, stride=self.bottleneck_stride))
             add_on_layers.append(nn.ReLU())
 
         if add_on_layers_type.startswith('bottleneck'):
+            # =====================================================================
+            # BOTTLENECK ADD-ON LAYERS
+            # =====================================================================
+            # Create bottleneck layers that gradually reduce channel dimensions
+            # until reaching the prototype feature dimension
+            
             current_in_channels = first_add_on_layer_in_channels
             while (current_in_channels > self.prototype_shape[1]) or (len(add_on_layers) == 0):
+                # Calculate output channels (reduce by half each time)
                 current_out_channels = max(self.prototype_shape[1], (current_in_channels // 2))
+                
+                # Add 1x1 convolution to reduce channels
                 add_on_layers.append(nn.Conv2d(in_channels=current_in_channels,
                                                out_channels=current_out_channels,
                                                kernel_size=1))
                 add_on_layers.append(nn.ReLU())
+                
+                # Add another 1x1 convolution
                 add_on_layers.append(nn.Conv2d(in_channels=current_out_channels,
                                                out_channels=current_out_channels,
                                                kernel_size=1))
+                
+                # Add activation function
                 if current_out_channels > self.prototype_shape[1]:
                     add_on_layers.append(nn.ReLU())
                 else:
+                    # Final layer uses Sigmoid activation
                     assert (current_out_channels == self.prototype_shape[1])
                     add_on_layers.append(nn.Sigmoid())
+                
+                # Reduce channels for next iteration
                 current_in_channels = current_in_channels // 2
+            
+            # Create sequential module from list of layers
             self.add_on_layers = nn.Sequential(*add_on_layers)
         elif add_on_layers_type == 'deeplab_simple':
+            # =====================================================================
+            # DEEPLAB SIMPLE ADD-ON LAYERS
+            # =====================================================================
+            # Simple add-on layers for DeepLab architecture
+            # Just applies Sigmoid activation
             log('deeplab_simple add_on_layers')
             self.add_on_layers = nn.Sequential(
                 nn.Sigmoid()
             )
         else:
+            # =====================================================================
+            # DEFAULT ADD-ON LAYERS
+            # =====================================================================
+            # Standard add-on layers: 1x1 conv -> ReLU -> 1x1 conv -> Sigmoid
             self.add_on_layers = nn.Sequential(
                 nn.Conv2d(in_channels=first_add_on_layer_in_channels, out_channels=self.prototype_shape[1],
                           kernel_size=1),
@@ -135,11 +233,20 @@ class PPNet(nn.Module):
                 nn.Sigmoid()
             )
 
-        # do not make this just a tensor,
-        # since it will not be moved automatically to gpu
+        # =============================================================================
+        # ONES PARAMETER - FOR DISTANCE COMPUTATION
+        # =============================================================================
+        # Tensor of ones with same shape as prototypes
+        # Used in distance computation between features and prototypes
+        # Must be nn.Parameter to be moved to GPU automatically
         self.ones = nn.Parameter(torch.ones(self.prototype_shape),
                                  requires_grad=False)
 
+        # =============================================================================
+        # LAST LAYER - FINAL CLASSIFICATION LAYER
+        # =============================================================================
+        # Linear layer that maps prototype activations to class predictions
+        # Input: num_prototypes, Output: num_classes
         self.last_layer = nn.Linear(self.num_prototypes, self.num_classes,
                                     bias=False)  # do not use bias
 
@@ -162,15 +269,30 @@ class PPNet(nn.Module):
         return self.last_layer(prototype_activations)
 
     def conv_features(self, x):
-        '''
-        the feature input to prototype layer
-        '''
+        """
+        =============================================================================
+        CONV_FEATURES - EXTRACT FEATURES FOR PROTOTYPE MATCHING
+        =============================================================================
+        Purpose: Extract and process features from input images for prototype matching
+        
+        Process:
+            1. Extract features using backbone network (ResNet, VGG, etc.)
+            2. Process features through add-on layers
+            3. Return features ready for prototype matching
+        
+        Input: x - Input images [B, 3, H, W]
+        Output: Processed features [B, feature_dim, H', W']
+        =============================================================================
+        """
+        # Extract features using backbone network
         x = self.features(x)
 
-        # multi-scale training (MCS)
+        # Handle multi-scale training (MCS)
         if isinstance(x, list):
+            # Process each scale separately
             return [self.add_on_layers(x_scaled) for x_scaled in x]
 
+        # Process features through add-on layers
         x = self.add_on_layers(x)
         return x
 
@@ -237,12 +359,31 @@ class PPNet(nn.Module):
             return self.prototype_activation_function(distances)
 
     def forward(self, x, **kwargs):
+        """
+        =============================================================================
+        FORWARD PASS - MAIN INFERENCE FUNCTION
+        =============================================================================
+        Purpose: Complete forward pass through the ProtoPNet model
+        
+        Process:
+            1. Extract features using conv_features()
+            2. Handle multi-scale training if needed
+            3. Compute prototype activations and classifications
+            4. Return final predictions
+        
+        Input: x - Input images [B, 3, H, W]
+        Output: Class predictions [B, num_classes, H', W']
+        =============================================================================
+        """
+        # Extract features for prototype matching
         conv_features = self.conv_features(x)
 
-        # MCS
+        # Handle multi-scale training (MCS)
         if isinstance(conv_features, list):
+            # Process each scale separately and return list of results
             return [self.forward_from_conv_features(c, **kwargs) for c in conv_features]
 
+        # Single scale processing
         return self.forward_from_conv_features(conv_features, **kwargs)
 
     def forward_with_features(self, x, **kwargs):
@@ -388,31 +529,67 @@ class PPNet(nn.Module):
 
 @gin.configurable(denylist=['img_size'])
 def construct_PPNet(
-        img_size=224,
-        base_architecture=gin.REQUIRED,
-        pretrained=True,
-        prototype_shape=(2000, 512, 1, 1),
-        num_classes=200,
-        prototype_activation_function='log',
-        add_on_layers_type='bottleneck'
+        # =============================================================================
+        # CONSTRUCT_PPNET - PROTOPTNET MODEL CONSTRUCTOR
+        # =============================================================================
+        # Purpose: Factory function to create a complete ProtoPNet model
+        # This function assembles all components needed for prototype-based segmentation
+        # =============================================================================
+        
+        img_size=224,                                    # Input image size (height/width)
+        base_architecture=gin.REQUIRED,                  # Backbone architecture (MUST be in .gin file)
+        pretrained=True,                                 # Whether to use pretrained weights
+        prototype_shape=(2000, 512, 1, 1),              # Prototype tensor shape: (num_prototypes, features, height, width)
+                                                         # - 2000: Number of prototypes (learnable feature vectors)
+                                                         # - 512: Feature dimensions per prototype
+                                                         # - 1: Height of prototype patch (1 pixel)
+                                                         # - 1: Width of prototype patch (1 pixel)
+        num_classes=200,                                 # Number of output classes
+        prototype_activation_function='log',             # Activation function for prototypes
+        add_on_layers_type='bottleneck'                  # Type of add-on layers
 ):
+    # =============================================================================
+    # STEP 1: CREATE FEATURE EXTRACTOR (BACKBONE)
+    # =============================================================================
+    # Create the backbone network (ResNet, VGG, DenseNet, etc.)
+    # This extracts features from input images
     features = base_architecture_to_features[base_architecture](pretrained=pretrained)
+    
+    # =============================================================================
+    # STEP 2: EXTRACT CONVOLUTIONAL LAYER INFORMATION
+    # =============================================================================
+    # Get information about convolutional layers for receptive field calculation
     if hasattr(features, 'conv_info'):
+        # Extract layer specifications (filter sizes, strides, paddings)
         layer_filter_sizes, layer_strides, layer_paddings = features.conv_info()
     else:
+        # Default empty values if conv_info not available
         layer_filter_sizes, layer_strides, layer_paddings = [], [], []
 
-    proto_layer_rf_info = compute_proto_layer_rf_info_v2(img_size=img_size,
-                                                         layer_filter_sizes=layer_filter_sizes,
-                                                         layer_strides=layer_strides,
-                                                         layer_paddings=layer_paddings,
-                                                         prototype_kernel_size=prototype_shape[2])
+    # =============================================================================
+    # STEP 3: COMPUTE RECEPTIVE FIELD INFORMATION
+    # =============================================================================
+    # Calculate receptive field information for prototype layer
+    # This determines how much of the input image each prototype "sees"
+    proto_layer_rf_info = compute_proto_layer_rf_info_v2(
+        img_size=img_size,                                    # Input image size
+        layer_filter_sizes=layer_filter_sizes,               # Conv layer filter sizes
+        layer_strides=layer_strides,                         # Conv layer strides
+        layer_paddings=layer_paddings,                       # Conv layer paddings
+        prototype_kernel_size=prototype_shape[2]             # Prototype patch size (height)
+    )
 
-    return PPNet(features=features,
-                 img_size=img_size,
-                 prototype_shape=prototype_shape,
-                 proto_layer_rf_info=proto_layer_rf_info,
-                 num_classes=num_classes,
-                 init_weights=True,
-                 prototype_activation_function=prototype_activation_function,
-                 add_on_layers_type=add_on_layers_type)
+    # =============================================================================
+    # STEP 4: CREATE COMPLETE PROTOPTNET MODEL
+    # =============================================================================
+    # Assemble all components into the final ProtoPNet model
+    return PPNet(
+        features=features,                                    # Backbone feature extractor
+        img_size=img_size,                                   # Input image size
+        prototype_shape=prototype_shape,                     # Prototype tensor shape
+        proto_layer_rf_info=proto_layer_rf_info,            # Receptive field information
+        num_classes=num_classes,                             # Number of output classes
+        init_weights=True,                                   # Initialize weights
+        prototype_activation_function=prototype_activation_function,  # Prototype activation
+        add_on_layers_type=add_on_layers_type               # Add-on layer type
+    )

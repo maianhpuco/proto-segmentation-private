@@ -5,7 +5,7 @@ import os
 from collections import defaultdict
 from typing import Dict, Optional
 
-import gin
+import gin  # Google's gin-config: A lightweight configuration framework for Python
 import torch
 import torch.nn.functional as F
 from pytorch_lightning import LightningModule
@@ -39,74 +39,211 @@ def reset_metrics() -> Dict:
 # noinspection PyAbstractClass
 @gin.configurable(denylist=['model_dir', 'ppnet', 'training_phase', 'max_steps'])
 class PatchClassificationModule(LightningModule):
+    """
+    =============================================================================
+    GIN CONFIGURATION SYSTEM EXPLANATION
+    =============================================================================
+    
+    GIN (Google's gin-config) is a lightweight configuration framework that allows:
+    
+    1. DECLARATIVE CONFIGURATION: Define hyperparameters in .gin files
+    2. AUTOMATIC INJECTION: Automatically inject config values into functions/classes
+    3. EXPERIMENT MANAGEMENT: Easy switching between different configurations
+    4. REPRODUCIBILITY: Save and load exact configurations for experiments
+    
+    HOW IT WORKS:
+    - @gin.configurable decorator makes this class configurable
+    - denylist=['model_dir', 'ppnet', 'training_phase', 'max_steps'] excludes these from config
+    - gin.REQUIRED parameters must be provided in .gin config files
+    - gin.parse_config_file() loads configuration from .gin files
+    
+    EXAMPLE CONFIG FILE (cityscapes_kld_imnet.gin):
+    PatchClassificationModule.loss_weight_crs_ent = 1.0
+    PatchClassificationModule.joint_optimizer_lr_features = 2.5e-5
+    PatchClassificationModule.warm_optimizer_lr_add_on_layers = 2.5e-4
+    
+    =============================================================================
+    """
+    """
+    =============================================================================
+    PATCHCLASSIFICATIONMODULE - PYTORCH LIGHTNING MODULE
+    =============================================================================
+    
+    PURPOSE:
+        Main training module for prototype-based semantic segmentation.
+        This is the core PyTorch Lightning module that handles the complete
+        training pipeline for ProtoSegmentation.
+    
+    KEY RESPONSIBILITIES:
+        1. Training Loop Management: Handles train/val/test steps
+        2. Loss Computation: Implements prototype-based segmentation losses
+        3. Optimizer Configuration: Sets up different optimizers for each phase
+        4. Metrics Tracking: Computes accuracy, loss, and prototype statistics
+        5. Phase Management: Controls which parameters are trainable
+        6. Checkpointing: Saves models at different training stages
+    
+    TRAINING PHASES:
+        - Phase 0 (Warmup): Train prototypes and add-on layers only
+          → Handled by: warm_only() function in train_and_test.py
+          → Configured in: __init__() method (lines 175-180)
+          → Optimizer: configure_optimizers() method (warmup section)
+        
+        - Phase 1 (Joint): Train all components with different learning rates
+          → Handled by: joint() function in train_and_test.py
+          → Configured in: __init__() method (lines 175-180)
+          → Optimizer: configure_optimizers() method (joint section)
+        
+        - Phase 2 (Fine-tuning): Train only the last classification layer
+          → Handled by: last_only() function in train_and_test.py
+          → Configured in: __init__() method (lines 175-180)
+          → Optimizer: configure_optimizers() method (last layer section)
+    
+    PATCH CLASSIFICATION APPROACH:
+        - Treats semantic segmentation as pixel-wise classification
+        - Each pixel is classified using prototype matching
+        - Prototypes represent characteristic features of each class
+        - Model learns to match image patches to learned prototypes
+    
+    =============================================================================
+    """
     def __init__(
             self,
-            model_dir: str,
-            ppnet: PPNet,
-            training_phase: int,
-            max_steps: Optional[int] = None,
-            poly_lr_power: float = gin.REQUIRED,
-            loss_weight_crs_ent: float = gin.REQUIRED,
-            loss_weight_l1: float = gin.REQUIRED,
-            loss_weight_kld: float = 0.0,
-            joint_optimizer_lr_features: float = gin.REQUIRED,
-            joint_optimizer_lr_add_on_layers: float = gin.REQUIRED,
-            joint_optimizer_lr_prototype_vectors: float = gin.REQUIRED,
-            joint_optimizer_weight_decay: float = gin.REQUIRED,
-            warm_optimizer_lr_add_on_layers: float = gin.REQUIRED,
-            warm_optimizer_lr_prototype_vectors: float = gin.REQUIRED,
-            warm_optimizer_weight_decay: float = gin.REQUIRED,
-            last_layer_optimizer_lr: float = gin.REQUIRED,
-            ignore_void_class: bool = False,
-            iter_size: int = 1,
+            # =============================================================================
+            # PATCHCLASSIFICATIONMODULE INITIALIZATION PARAMETERS
+            # =============================================================================
+            
+            # === CORE COMPONENTS ===
+            model_dir: str,                    # Directory to save models and results
+            ppnet: PPNet,                      # The prototype network model
+            training_phase: int,               # Current training phase (0=warmup, 1=joint, 2=finetune)
+            max_steps: Optional[int] = None,   # Maximum training steps for this phase
+            
+            # === LEARNING RATE SCHEDULER ===
+            poly_lr_power: float = gin.REQUIRED,  # Power for polynomial LR decay (MUST be in .gin file)
+            
+            # === LOSS WEIGHTS ===
+            loss_weight_crs_ent: float = gin.REQUIRED,  # Cross-entropy loss weight (MUST be in .gin file)
+            loss_weight_l1: float = gin.REQUIRED,       # L1 regularization weight (MUST be in .gin file)
+            loss_weight_kld: float = 0.0,               # KLD loss weight for prototype diversity (optional)
+            
+            # === JOINT TRAINING OPTIMIZER (Phase 1) ===
+            joint_optimizer_lr_features: float = gin.REQUIRED,        # LR for backbone features (MUST be in .gin file)
+            joint_optimizer_lr_add_on_layers: float = gin.REQUIRED,   # LR for add-on layers (MUST be in .gin file)
+            joint_optimizer_lr_prototype_vectors: float = gin.REQUIRED, # LR for prototypes (MUST be in .gin file)
+            joint_optimizer_weight_decay: float = gin.REQUIRED,       # Weight decay (MUST be in .gin file)
+            
+            # === WARMUP OPTIMIZER (Phase 0) ===
+            warm_optimizer_lr_add_on_layers: float = gin.REQUIRED,    # LR for add-on layers (MUST be in .gin file)
+            warm_optimizer_lr_prototype_vectors: float = gin.REQUIRED, # LR for prototypes (MUST be in .gin file)
+            warm_optimizer_weight_decay: float = gin.REQUIRED,        # Weight decay (MUST be in .gin file)
+            
+            # === LAST LAYER OPTIMIZER (Phase 2) ===
+            last_layer_optimizer_lr: float = gin.REQUIRED,  # LR for classification head (MUST be in .gin file)
+            
+            # === TRAINING OPTIONS ===
+            ignore_void_class: bool = False,   # Whether to ignore void class (0) in loss
+            iter_size: int = 1,                # Gradient accumulation steps
     ):
         super().__init__()
-        self.model_dir = model_dir
-        self.prototypes_dir = os.path.join(model_dir, 'prototypes')
-        self.checkpoints_dir = os.path.join(model_dir, 'checkpoints')
-        self.ppnet = ppnet
-        self.training_phase = training_phase
-        self.max_steps = max_steps
-        self.poly_lr_power = poly_lr_power
-        self.loss_weight_crs_ent = loss_weight_crs_ent
-        self.loss_weight_l1 = loss_weight_l1
+        
+        # =============================================================================
+        # INITIALIZATION - STORE ALL CONFIGURATION PARAMETERS
+        # =============================================================================
+        
+        # Core components
+        self.model_dir = model_dir                                    # Results directory
+        self.prototypes_dir = os.path.join(model_dir, 'prototypes')   # Prototype images directory
+        self.checkpoints_dir = os.path.join(model_dir, 'checkpoints') # Model checkpoints directory
+        self.ppnet = ppnet                                            # The prototype network model
+        self.training_phase = training_phase                          # Current training phase
+        self.max_steps = max_steps                                    # Max steps for this phase
+        
+        # Learning rate scheduler
+        self.poly_lr_power = poly_lr_power                            # Polynomial LR decay power
+        
+        # Loss weights
+        self.loss_weight_crs_ent = loss_weight_crs_ent                # Cross-entropy loss weight
+        self.loss_weight_l1 = loss_weight_l1                          # L1 regularization weight
+        self.loss_weight_kld = loss_weight_kld                        # KLD loss weight
+        
+        # Joint training optimizer parameters (Phase 1)
         self.joint_optimizer_lr_features = joint_optimizer_lr_features
         self.joint_optimizer_lr_add_on_layers = joint_optimizer_lr_add_on_layers
         self.joint_optimizer_lr_prototype_vectors = joint_optimizer_lr_prototype_vectors
         self.joint_optimizer_weight_decay = joint_optimizer_weight_decay
+        
+        # Warmup optimizer parameters (Phase 0)
         self.warm_optimizer_lr_add_on_layers = warm_optimizer_lr_add_on_layers
         self.warm_optimizer_lr_prototype_vectors = warm_optimizer_lr_prototype_vectors
         self.warm_optimizer_weight_decay = warm_optimizer_weight_decay
+        
+        # Last layer optimizer parameters (Phase 2)
         self.last_layer_optimizer_lr = last_layer_optimizer_lr
-        self.ignore_void_class = ignore_void_class
-        self.iter_size = iter_size
-        self.loss_weight_kld = loss_weight_kld
+        
+        # Training options
+        self.ignore_void_class = ignore_void_class                    # Ignore void class in loss
+        self.iter_size = iter_size                                    # Gradient accumulation steps
 
-        os.makedirs(self.prototypes_dir, exist_ok=True)
-        os.makedirs(self.checkpoints_dir, exist_ok=True)
+        # Create necessary directories
+        os.makedirs(self.prototypes_dir, exist_ok=True)               # For saving prototype images
+        os.makedirs(self.checkpoints_dir, exist_ok=True)              # For saving model checkpoints
 
-        # initialize variables for computing metrics
+        # =============================================================================
+        # METRICS AND TRAINING STATE INITIALIZATION
+        # =============================================================================
+        
+        # Initialize metrics tracking for different splits
         self.metrics = {}
         for split_key in ['train', 'val', 'test', 'train_last_layer']:
-            self.metrics[split_key] = reset_metrics()
+            self.metrics[split_key] = reset_metrics()  # Reset all metrics to zero
 
-        # initialize configure_optimizers()
-        self.optimizer_defaults = None
-        self.start_step = None
+        # Training state variables
+        self.optimizer_defaults = None  # Will be set by configure_optimizers()
+        self.start_step = None          # Track when training started
 
-        # we use optimizers manually
-        self.automatic_optimization = False
-        self.best_acc = 0.0
+        # Manual optimization control (PyTorch Lightning feature)
+        self.automatic_optimization = False  # We handle optimization manually
+        self.best_acc = 0.0                 # Track best validation accuracy
 
+        # =============================================================================
+        # TRAINING PHASE CONFIGURATION
+        # =============================================================================
+        # Configure which parameters are trainable based on training phase
         if self.training_phase == 0:
+            # =============================================================================
+            # PHASE 0: WARMUP - Initialize prototypes and add-on layers
+            # =============================================================================
+            # Function: warm_only() in train_and_test.py
+            # Freeze: Feature backbone (ResNet101, VGG, etc.)
+            # Train: Add-on layers, ASPP layers, prototype vectors, last layer
             warm_only(model=self.ppnet, log=log)
-            log(f'WARM-UP TRAINING START. ({self.max_steps} steps)')
+            log(f'🔥 WARM-UP TRAINING START. ({self.max_steps} steps)')
+            log('   - Frozen: Feature backbone')
+            log('   - Trainable: Add-on layers, ASPP, prototypes, last layer')
+            
         elif self.training_phase == 1:
+            # =============================================================================
+            # PHASE 1: JOINT - Fine-tune entire network
+            # =============================================================================
+            # Function: joint() in train_and_test.py
+            # Train: ALL components with different learning rates
+            # Backbone: Low LR, Add-on/Prototypes: High LR
             joint(model=self.ppnet, log=log)
-            log(f'JOINT TRAINING START. ({self.max_steps} steps)')
+            log(f'🔄 JOINT TRAINING START. ({self.max_steps} steps)')
+            log('   - Trainable: ALL components')
+            log('   - Learning rates: Backbone (low) vs Add-on/Prototypes (high)')
+            
         else:
+            # =============================================================================
+            # PHASE 2: LAST LAYER - Fine-tune only classification head
+            # =============================================================================
+            # Function: last_only() in train_and_test.py
+            # Freeze: Feature backbone, add-on layers, prototype vectors
+            # Train: ONLY last layer (classification head)
             last_only(model=self.ppnet, log=log)
-            log('LAST LAYER TRAINING START.')
+            log('🎯 LAST LAYER TRAINING START.')
+            log('   - Frozen: Backbone, add-on layers, prototypes')
+            log('   - Trainable: ONLY last layer')
 
         self.ppnet.prototype_class_identity = self.ppnet.prototype_class_identity.cuda()
         self.lr_scheduler = None
@@ -114,9 +251,30 @@ class PatchClassificationModule(LightningModule):
         self.batch_metrics = defaultdict(list)
 
     def forward(self, x):
+        """
+        =============================================================================
+        FORWARD PASS
+        =============================================================================
+        Purpose: Forward pass through the prototype network
+        Input: x - Input images [B, 3, 513, 513]
+        Output: Model predictions (logits and prototype activations)
+        =============================================================================
+        """
         return self.ppnet(x)
 
     def _step(self, split_key: str, batch):
+        """
+        =============================================================================
+        TRAINING/VALIDATION STEP
+        =============================================================================
+        Purpose: Single training or validation step
+        Process:
+            1. Forward pass through model
+            2. Compute losses (cross-entropy, KLD, L1)
+            3. Backward pass and optimization (training only)
+            4. Update metrics
+        =============================================================================
+        """
         optimizer = self.optimizers()
         if split_key == 'train' and self.iter_steps == 0:
             optimizer.zero_grad()
@@ -261,12 +419,36 @@ class PatchClassificationModule(LightningModule):
             self.batch_metrics = defaultdict(list)
 
     def training_step(self, batch, batch_idx):
+        """
+        =============================================================================
+        TRAINING STEP
+        =============================================================================
+        Purpose: Single training step with gradient computation and optimization
+        Features: Enables gradient computation, optimizer updates, and learning rate scheduling
+        =============================================================================
+        """
         return self._step('train', batch)
 
     def validation_step(self, batch, batch_idx):
+        """
+        =============================================================================
+        VALIDATION STEP
+        =============================================================================
+        Purpose: Single validation step without gradient computation
+        Features: Disables gradients, computes metrics for validation set
+        =============================================================================
+        """
         return self._step('val', batch)
 
     def test_step(self, batch, batch_idx):
+        """
+        =============================================================================
+        TEST STEP
+        =============================================================================
+        Purpose: Single test step for final evaluation
+        Features: Same as validation but for test set evaluation
+        =============================================================================
+        """
         return self._step('test', batch)
 
     def on_train_epoch_start(self):
@@ -331,73 +513,140 @@ class PatchClassificationModule(LightningModule):
         return self._epoch_end('test')
 
     def configure_optimizers(self):
-        if self.training_phase == 0:  # warmup
+        """
+        =============================================================================
+        OPTIMIZER CONFIGURATION FOR EACH TRAINING PHASE
+        =============================================================================
+        Purpose: Set up different optimizers for each training phase
+        Phases:
+            - Phase 0: Warmup optimizer (handled by warm_only() function)
+            - Phase 1: Joint optimizer (handled by joint() function)  
+            - Phase 2: Last layer optimizer (handled by last_only() function)
+        =============================================================================
+        """
+        # =============================================================================
+        # OPTIMIZER CONFIGURATION FOR EACH TRAINING PHASE
+        # =============================================================================
+        if self.training_phase == 0:  # PHASE 0: WARMUP
+            # =====================================================================
+            # WARMUP PHASE OPTIMIZER SETUP
+            # =====================================================================
+            # Function: warm_only() in train_and_test.py
+            # Purpose: Initialize prototypes and add-on layers
+            # Trainable: Add-on layers, ASPP layers, prototype vectors, last layer
+            # Frozen: Feature backbone (ResNet101, VGG, etc.)
+            # =====================================================================
+            
+            # Get ASPP (Atrous Spatial Pyramid Pooling) parameters from DeepLab
+            # These are the dilated convolution layers that capture multi-scale features
             aspp_params = [
-                self.ppnet.features.base.aspp.c0.weight,
+                self.ppnet.features.base.aspp.c0.weight,  # ASPP conv 1x1
                 self.ppnet.features.base.aspp.c0.bias,
-                self.ppnet.features.base.aspp.c1.weight,
+                self.ppnet.features.base.aspp.c1.weight,  # ASPP conv 3x3, rate=6
                 self.ppnet.features.base.aspp.c1.bias,
-                self.ppnet.features.base.aspp.c2.weight,
+                self.ppnet.features.base.aspp.c2.weight,  # ASPP conv 3x3, rate=12
                 self.ppnet.features.base.aspp.c2.bias,
-                self.ppnet.features.base.aspp.c3.weight,
+                self.ppnet.features.base.aspp.c3.weight,  # ASPP conv 3x3, rate=18
                 self.ppnet.features.base.aspp.c3.bias
             ]
-            optimizer_specs = \
-                [
-                    {
-                        'params': list(self.ppnet.add_on_layers.parameters()) + aspp_params,
-                        'lr': self.warm_optimizer_lr_add_on_layers,
-                        'weight_decay': self.warm_optimizer_weight_decay
-                    },
-                    {
-                        'params': self.ppnet.prototype_vectors,
-                        'lr': self.warm_optimizer_lr_prototype_vectors
-                    }
-                ]
-        elif self.training_phase == 1:  # joint
-            optimizer_specs = \
-                [
-                    {
-                        "params": get_params(self.ppnet.features, key="1x"),
-                        'lr': self.joint_optimizer_lr_features,
-                        'weight_decay': self.joint_optimizer_weight_decay
-                    },
-                    {
-                        "params": get_params(self.ppnet.features, key="10x"),
-                        'lr': 10 * self.joint_optimizer_lr_features,
-                        'weight_decay': self.joint_optimizer_weight_decay
-                    },
-                    {
-                        "params": get_params(self.ppnet.features, key="20x"),
-                        'lr': 10 * self.joint_optimizer_lr_features,
-                        'weight_decay': self.joint_optimizer_weight_decay
-                    },
-                    {
-                        'params': self.ppnet.add_on_layers.parameters(),
-                        'lr': self.joint_optimizer_lr_add_on_layers,
-                        'weight_decay': self.joint_optimizer_weight_decay
-                    },
-                    {
-                        'params': self.ppnet.prototype_vectors,
-                        'lr': self.joint_optimizer_lr_prototype_vectors
-                    }
-                ]
-        else:  # last layer
+            
+            # Configure optimizer with two parameter groups:
             optimizer_specs = [
                 {
+                    # Group 1: Add-on layers + ASPP layers
+                    # These process features from the frozen backbone
+                    'params': list(self.ppnet.add_on_layers.parameters()) + aspp_params,
+                    'lr': self.warm_optimizer_lr_add_on_layers,  # e.g., 2.5e-4
+                    'weight_decay': self.warm_optimizer_weight_decay  # e.g., 5e-4
+                },
+                {
+                    # Group 2: Prototype vectors
+                    # These are the learnable prototypes that represent class features
+                    'params': self.ppnet.prototype_vectors,
+                    'lr': self.warm_optimizer_lr_prototype_vectors  # e.g., 2.5e-4
+                    # No weight decay for prototypes (they are normalized)
+                }
+            ]
+        elif self.training_phase == 1:  # PHASE 1: JOINT TRAINING
+            # =====================================================================
+            # JOINT PHASE OPTIMIZER SETUP
+            # =====================================================================
+            # Function: joint() in train_and_test.py
+            # Purpose: Fine-tune entire network with different learning rates
+            # Trainable: ALL components (backbone, add-on, prototypes, last layer)
+            # Strategy: Lower LR for backbone, higher LR for new components
+            # =====================================================================
+            
+            optimizer_specs = [
+                {
+                    # Group 1: Backbone layers (ResNet101 layers)
+                    # Use lower learning rate to preserve pretrained features
+                    "params": get_params(self.ppnet.features, key="1x"),  # ResNet layers
+                    'lr': self.joint_optimizer_lr_features,  # e.g., 2.5e-5 (low)
+                    'weight_decay': self.joint_optimizer_weight_decay  # e.g., 5e-4
+                },
+                {
+                    # Group 2: ASPP conv weights (10x higher LR)
+                    # These are important for multi-scale feature extraction
+                    "params": get_params(self.ppnet.features, key="10x"),  # ASPP conv weights
+                    'lr': 10 * self.joint_optimizer_lr_features,  # e.g., 2.5e-4 (10x higher)
+                    'weight_decay': self.joint_optimizer_weight_decay
+                },
+                {
+                    # Group 3: ASPP conv biases (10x higher LR)
+                    "params": get_params(self.ppnet.features, key="20x"),  # ASPP conv biases
+                    'lr': 10 * self.joint_optimizer_lr_features,  # e.g., 2.5e-4 (10x higher)
+                    'weight_decay': self.joint_optimizer_weight_decay
+                },
+                {
+                    # Group 4: Add-on layers
+                    # These are new layers added on top of the backbone
+                    'params': self.ppnet.add_on_layers.parameters(),
+                    'lr': self.joint_optimizer_lr_add_on_layers,  # e.g., 2.5e-4 (high)
+                    'weight_decay': self.joint_optimizer_weight_decay
+                },
+                {
+                    # Group 5: Prototype vectors
+                    # These are the core learnable prototypes
+                    'params': self.ppnet.prototype_vectors,
+                    'lr': self.joint_optimizer_lr_prototype_vectors  # e.g., 2.5e-4 (high)
+                    # No weight decay for prototypes
+                }
+            ]
+        else:  # PHASE 2: LAST LAYER FINE-TUNING
+            # =====================================================================
+            # LAST LAYER PHASE OPTIMIZER SETUP
+            # =====================================================================
+            # Function: last_only() in train_and_test.py
+            # Purpose: Fine-tune only the classification head
+            # Trainable: ONLY last layer (classification head)
+            # Frozen: Feature backbone, add-on layers, prototype vectors
+            # =====================================================================
+            
+            optimizer_specs = [
+                {
+                    # Only train the final classification layer
+                    # This layer maps prototype activations to class predictions
                     'params': self.ppnet.last_layer.parameters(),
-                    'lr': self.last_layer_optimizer_lr
+                    'lr': self.last_layer_optimizer_lr  # e.g., 1e-5 (very low)
+                    # No weight decay for last layer
                 }
             ]
 
+        # Create Adam optimizer with the configured parameter groups
         optimizer = torch.optim.Adam(optimizer_specs)
 
-        if self.training_phase == 1:
+        # =============================================================================
+        # LEARNING RATE SCHEDULER SETUP
+        # =============================================================================
+        if self.training_phase == 1:  # Only use scheduler for joint training
+            # Polynomial learning rate decay for joint training
+            # Helps with convergence during long joint training phase
             self.lr_scheduler = PolynomialLR(
                 optimizer=optimizer,
                 step_size=1,
-                iter_max=self.max_steps // self.iter_size,
-                power=self.poly_lr_power
+                iter_max=self.max_steps // self.iter_size,  # Total iterations
+                power=self.poly_lr_power  # e.g., 0.9 (decay rate)
             )
 
         return optimizer

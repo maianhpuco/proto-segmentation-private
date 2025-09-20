@@ -142,49 +142,117 @@ def test(model, dataloader, class_specific=False, log=print):
 
 
 def last_only(model, log=print):
+    """
+    =============================================================================
+    PHASE 2: LAST LAYER ONLY TRAINING
+    =============================================================================
+    Purpose: Freeze all components except the final classification layer
+    Trainable: ONLY last layer (classification head)
+    Frozen: Feature backbone, add-on layers, prototype vectors
+    Use case: Fine-tuning after prototype pushing
+    =============================================================================
+    """
     if hasattr(model, 'module'):
         model = model.module
+    
+    # Freeze feature extractor backbone (ResNet101, VGG, etc.)
     for p in model.features.parameters():
         p.requires_grad = False
+    
+    # Freeze add-on layers (feature processing layers)
     for p in model.add_on_layers.parameters():
         p.requires_grad = False
+    
+    # Freeze prototype vectors (learned prototypes)
     model.prototype_vectors.requires_grad = False
+    
+    # ONLY train the last layer (classification head)
+    # This layer maps prototype activations to class predictions
     for p in model.last_layer.parameters():
         p.requires_grad = True
 
 
 def warm_only(model, log=print):
+    """
+    =============================================================================
+    PHASE 0: WARMUP TRAINING
+    =============================================================================
+    Purpose: Initialize prototypes and add-on layers while keeping backbone frozen
+    Trainable: Add-on layers, ASPP layers, prototype vectors, last layer
+    Frozen: Feature backbone (ResNet101, VGG, etc.)
+    Use case: Initial training to learn meaningful prototypes
+    =============================================================================
+    """
+    # Get ASPP (Atrous Spatial Pyramid Pooling) parameters from DeepLab
+    # These are the dilated convolution layers that capture multi-scale features
     aspp_params = [
-        model.features.base.aspp.c0.weight,
+        model.features.base.aspp.c0.weight,  # ASPP conv 1x1
         model.features.base.aspp.c0.bias,
-        model.features.base.aspp.c1.weight,
+        model.features.base.aspp.c1.weight,  # ASPP conv 3x3, rate=6
         model.features.base.aspp.c1.bias,
-        model.features.base.aspp.c2.weight,
+        model.features.base.aspp.c2.weight,  # ASPP conv 3x3, rate=12
         model.features.base.aspp.c2.bias,
-        model.features.base.aspp.c3.weight,
+        model.features.base.aspp.c3.weight,  # ASPP conv 3x3, rate=18
         model.features.base.aspp.c3.bias
     ]
 
     if hasattr(model, 'module'):
         model = model.module
+    
+    # Freeze feature extractor backbone (ResNet101, VGG, etc.)
+    # Keep pretrained features intact during warmup
     for p in model.features.parameters():
         p.requires_grad = False
+    
+    # Train add-on layers (feature processing layers)
+    # These layers process features from the frozen backbone
     for p in model.add_on_layers.parameters():
         p.requires_grad = True
+    
+    # Train prototype vectors (learnable prototypes)
+    # These represent characteristic features of each class
     model.prototype_vectors.requires_grad = True
+    
+    # Train last layer (classification head)
+    # Maps prototype activations to class predictions
     for p in model.last_layer.parameters():
         p.requires_grad = True
+    
+    # Train ASPP layers (multi-scale feature extraction)
+    # These are important for capturing features at different scales
     for p in aspp_params:
         p.requires_grad = True
 
 
 def joint(model, log=print):
+    """
+    =============================================================================
+    PHASE 1: JOINT TRAINING
+    =============================================================================
+    Purpose: Fine-tune entire network with different learning rates for components
+    Trainable: ALL components (backbone, add-on layers, prototypes, last layer)
+    Strategy: Lower LR for backbone, higher LR for new components
+    Use case: Main training phase after warmup initialization
+    =============================================================================
+    """
     if hasattr(model, 'module'):
         model = model.module
+    
+    # Train feature extractor backbone (ResNet101, VGG, etc.)
+    # Use lower learning rate to preserve pretrained features
     for p in model.features.parameters():
         p.requires_grad = True
+    
+    # Train add-on layers (feature processing layers)
+    # Use higher learning rate for new components
     for p in model.add_on_layers.parameters():
         p.requires_grad = True
+    
+    # Train prototype vectors (learnable prototypes)
+    # These are the core components that represent class features
     model.prototype_vectors.requires_grad = True
+    
+    # Train last layer (classification head)
+    # Maps prototype activations to class predictions
     for p in model.last_layer.parameters():
         p.requires_grad = True
