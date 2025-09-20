@@ -36,7 +36,10 @@ src_clue_ver1/
 ├── model.py               # PPNet model definition
 ├── module.py              # Training module (simplified)
 ├── dataset.py             # Dataset loading and preprocessing
-└── deeplab_features.py    # DeepLab feature extractor
+├── deeplab_features.py    # DeepLab feature extractor
+├── download_voc.py        # Detailed VOC dataset downloader
+├── download_datasets.py   # Quick dataset downloader
+└── example_usage.py       # Usage examples and testing
 ```
 
 ## 🚀 Quick Start
@@ -53,6 +56,18 @@ pip install torch torchvision numpy pyyaml tqdm pillow
 ```
 
 ### 2. Prepare Dataset
+
+#### Option A: Download PASCAL VOC 2012 (Recommended for testing)
+
+```bash
+# Quick download
+python download_datasets.py voc
+
+# Or use the detailed downloader
+python download_voc.py
+```
+
+#### Option B: Download Cityscapes (For full training)
 
 ```bash
 # Create data directory structure
