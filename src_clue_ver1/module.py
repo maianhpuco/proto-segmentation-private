@@ -3,25 +3,52 @@
 SIMPLIFIED TRAINING MODULE FOR PROTOTYPE SEGMENTATION
 =============================================================================
 
-USAGE INSTRUCTIONS:
-1. This file contains the PyTorch Lightning module for training
-2. Handles the 3-phase training: Warmup -> Joint -> Fine-tuning
-3. Manages loss computation, optimization, and metrics
-4. Supports different training phases with different parameter configurations
+🎯 WHAT THIS FILE DOES:
+This file contains the training module that handles the 3-phase training pipeline
+for prototype-based semantic segmentation. It manages loss computation, optimization,
+and metrics for each training phase.
 
-HOW TO USE:
+🏗️ TRAINING PHASES EXPLAINED:
+
+📚 Phase 0: WARMUP
+- Purpose: Initialize prototypes and add-on layers
+- Trainable: Prototypes, add-on layers, last layer
+- Frozen: Feature backbone (ResNet101)
+- Learning Rate: Higher for new components (0.00025)
+- Goal: Learn meaningful prototype representations
+
+🔄 Phase 1: JOINT TRAINING
+- Purpose: Fine-tune entire network
+- Trainable: All components with different learning rates
+- Backbone LR: Lower (0.000025) - fine-tune pretrained features
+- New Components LR: Higher (0.00025) - learn new patterns
+- Goal: Joint optimization of all components
+
+🎯 Phase 2: FINE-TUNING
+- Purpose: Optimize final classification
+- Trainable: Only last layer
+- Frozen: Everything else
+- Learning Rate: Very low (0.00001)
+- Goal: Fine-tune classification weights
+
+🔧 LOSS COMPONENTS:
+1. Cross-Entropy Loss: Main segmentation loss
+2. L1 Regularization: Encourages sparse prototype activations
+3. KLD Loss: Encourages prototype diversity
+
+📚 USAGE INSTRUCTIONS:
 - Import: from module import PatchClassificationModule
 - Create module: module = PatchClassificationModule(config, model, training_phase)
-- Use with PyTorch Lightning trainer
+- Training step: loss_dict, accuracy = module.training_step(batch)
+- Validation step: loss_dict, accuracy = module.validation_step(batch)
 
-TRAINING PHASES:
-- Phase 0 (Warmup): Train prototypes and add-on layers only
-- Phase 1 (Joint): Train all components with different learning rates
-- Phase 2 (Fine-tuning): Train only the last classification layer
-
-CONFIGURATION:
+⚙️ CONFIGURATION:
 - All parameters are configured via config.yaml
-- Modify learning rates and loss weights in the config file
+- Key parameters:
+  * training.warmup_lr_*: Learning rates for warmup phase
+  * training.joint_lr_*: Learning rates for joint training
+  * training.last_layer_lr: Learning rate for fine-tuning
+  * training.loss_weight_*: Loss component weights
 =============================================================================
 """
 

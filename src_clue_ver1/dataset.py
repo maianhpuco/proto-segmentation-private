@@ -3,20 +3,50 @@
 SIMPLIFIED DATASET FOR PROTOTYPE SEGMENTATION
 =============================================================================
 
-USAGE INSTRUCTIONS:
-1. This file handles loading and preprocessing of images and segmentation masks
-2. Supports Cityscapes and PASCAL VOC datasets
-3. Applies data augmentation and normalization
-4. Converts segmentation masks to class IDs
+🎯 WHAT THIS FILE DOES:
+This file handles loading and preprocessing of images and segmentation masks for
+prototype-based semantic segmentation. It treats segmentation as a patch classification
+problem where each pixel is classified independently.
 
-HOW TO USE:
+🏗️ KEY FEATURES:
+- Supports Cityscapes and PASCAL VOC datasets
+- Applies data augmentation (random crop, flip, scaling)
+- Converts segmentation masks to class IDs
+- Handles different dataset formats and class mappings
+- Provides train/val/test splits
+
+📊 SUPPORTED DATASETS:
+
+🌆 Cityscapes Dataset:
+- 19 evaluation classes (road, sidewalk, building, etc.)
+- High-resolution images (1024×2048)
+- Dense pixel-level annotations
+- Train: 2975 images, Val: 500 images
+
+🏷️ PASCAL VOC 2012:
+- 21 classes (20 object classes + background)
+- Medium-resolution images (~500×500)
+- Sparse pixel-level annotations
+- Train: 1464 images, Val: 1449 images
+
+🔧 DATA PREPROCESSING:
+- Resize images to target size (513×513)
+- Normalize using ImageNet statistics
+- Convert masks to class IDs
+- Apply data augmentation (training only)
+
+📚 USAGE INSTRUCTIONS:
 - Import: from dataset import PatchClassificationDataset
 - Create dataset: dataset = PatchClassificationDataset(split='train', config=config)
 - Get sample: image, mask = dataset[0]
 
-CONFIGURATION:
+⚙️ CONFIGURATION:
 - All parameters are configured via config.yaml
-- Modify dataset paths and parameters in the config file
+- Key parameters:
+  * dataset.name: 'cityscapes' or 'pascal'
+  * dataset.window_size: [513, 513] (input image size)
+  * dataset.mean/std: ImageNet normalization values
+  * dataset.scales: [0.5, 1.5] (random scaling range)
 =============================================================================
 """
 
@@ -72,28 +102,36 @@ class PatchClassificationDataset(Dataset):
         if self.config['dataset']['name'] == 'cityscapes':
             if self.only_19_from_cityscapes:
                 # Cityscapes 19 evaluation classes
+                # Map original Cityscapes class IDs to 0-18 range
+                # This is the standard Cityscapes 19-class evaluation mapping
                 self.class_mapping = {
-                    0: 0,   # void
-                    1: 1,   # road
-                    2: 2,   # sidewalk
-                    3: 3,   # building
-                    4: 4,   # wall
-                    5: 5,   # fence
-                    6: 6,   # pole
-                    7: 7,   # traffic_light
-                    8: 8,   # traffic_sign
-                    9: 9,   # vegetation
-                    10: 10, # terrain
-                    11: 11, # sky
-                    12: 12, # person
-                    13: 13, # rider
-                    14: 14, # car
-                    15: 15, # truck
-                    16: 16, # bus
-                    17: 17, # train
-                    18: 18, # motorcycle
-                    19: 19, # bicycle
+                    0: 0,   # void -> 0
+                    1: 1,   # road -> 1
+                    2: 2,   # sidewalk -> 2
+                    3: 3,   # building -> 3
+                    4: 4,   # wall -> 4
+                    5: 5,   # fence -> 5
+                    6: 6,   # pole -> 6
+                    7: 7,   # traffic_light -> 7
+                    8: 8,   # traffic_sign -> 8
+                    9: 9,   # vegetation -> 9
+                    10: 10, # terrain -> 10
+                    11: 11, # sky -> 11
+                    12: 12, # person -> 12
+                    13: 13, # rider -> 13
+                    14: 14, # car -> 14
+                    15: 15, # truck -> 15
+                    16: 16, # bus -> 16
+                    17: 17, # train -> 17
+                    18: 18, # motorcycle -> 18
+                    19: 18, # bicycle -> 18 (map to motorcycle class)
                 }
+                
+                # Add mapping for all other Cityscapes classes to void (0)
+                # This ensures any unexpected class IDs are mapped to void
+                for i in range(20, 255):
+                    self.class_mapping[i] = 0
+                
                 self.num_classes = 19
             else:
                 # All Cityscapes classes
@@ -113,8 +151,15 @@ class PatchClassificationDataset(Dataset):
     
     def _get_cityscapes_paths(self):
         """Get Cityscapes dataset paths"""
-        image_dir = os.path.join(self.data_dir, 'cityscapes', 'leftImg8bit', self.split)
-        mask_dir = os.path.join(self.data_dir, 'cityscapes', 'gtFine', self.split)
+        # Check if data_dir already contains the cityscapes structure
+        if os.path.exists(os.path.join(self.data_dir, 'leftImg8bit')):
+            # Direct path to cityscapes data
+            image_dir = os.path.join(self.data_dir, 'leftImg8bit', self.split)
+            mask_dir = os.path.join(self.data_dir, 'gtFine', self.split)
+        else:
+            # Nested path structure
+            image_dir = os.path.join(self.data_dir, 'cityscapes', 'leftImg8bit', self.split)
+            mask_dir = os.path.join(self.data_dir, 'cityscapes', 'gtFine', self.split)
         
         image_paths = []
         mask_paths = []

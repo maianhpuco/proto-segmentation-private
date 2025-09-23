@@ -3,27 +3,55 @@
 SIMPLIFIED TRAINING SCRIPT FOR PROTOTYPE SEGMENTATION
 =============================================================================
 
-USAGE INSTRUCTIONS:
-1. This script implements the complete 3-phase training pipeline
-2. Phase 0: Warmup - Train prototypes and add-on layers only
-3. Phase 1: Joint - Train all components with different learning rates
-4. Phase 2: Fine-tuning - Train only the last classification layer
-5. Includes prototype pushing after joint training
+🎯 WHAT THIS SCRIPT DOES:
+This script implements the complete 3-phase training pipeline for prototype segmentation.
+It trains the model in stages to ensure stable learning and good performance.
 
-HOW TO RUN:
+🏗️ TRAINING PHASES OVERVIEW:
+
+📚 Phase 0: WARMUP (15,000 steps)
+- Purpose: Initialize prototypes and add-on layers
+- Trainable: Prototypes, add-on layers, last layer
+- Frozen: Feature backbone (ResNet101)
+- Goal: Learn meaningful prototype representations
+- Learning Rate: Higher for new components
+
+🔄 Phase 1: JOINT TRAINING (150,000 steps)
+- Purpose: Fine-tune entire network
+- Trainable: All components with different learning rates
+- Strategy: Lower LR for backbone, higher LR for new components
+- Goal: Joint optimization of all components
+- Includes: Prototype pushing (replace learned vectors with actual image patches)
+
+🎯 Phase 2: FINE-TUNING (10,000 steps)
+- Purpose: Optimize final classification
+- Trainable: Only last layer
+- Frozen: Everything else
+- Goal: Fine-tune classification weights
+
+🚀 HOW TO RUN:
 1. Prepare your dataset in the data directory
 2. Modify config.yaml for your specific setup
 3. Run: python train.py
 
-COMMAND LINE ARGUMENTS:
+📋 COMMAND LINE ARGUMENTS:
 - --config: Path to config file (default: config.yaml)
 - --resume: Path to checkpoint to resume from (optional)
 - --phase: Specific training phase to run (0, 1, or 2)
+- --skip_push: Skip prototype pushing (optional)
 
-EXAMPLE USAGE:
-python train.py --config config.yaml
-python train.py --resume checkpoints/warmup_checkpoint.pth
-python train.py --phase 1  # Run only joint training
+💡 EXAMPLE USAGE:
+python train.py --config config.yaml                    # Run all phases
+python train.py --resume checkpoints/warmup_checkpoint.pth  # Resume from checkpoint
+python train.py --phase 1                              # Run only joint training
+python train.py --skip_push                            # Skip prototype pushing
+
+🔧 KEY FEATURES:
+- Automatic checkpoint saving after each phase
+- Early stopping to prevent overfitting
+- Prototype pushing for better interpretability
+- Support for resuming training from checkpoints
+- Configurable learning rates and loss weights
 =============================================================================
 """
 
@@ -55,8 +83,9 @@ def create_data_loaders(config: dict):
     training_config = config['training']
     
     # Create datasets
-    train_dataset = PatchClassificationDataset('train', config)
-    val_dataset = PatchClassificationDataset('val', config)
+    data_dir = config['paths']['data_dir']
+    train_dataset = PatchClassificationDataset('train', config, data_dir)
+    val_dataset = PatchClassificationDataset('val', config, data_dir)
     
     # Create data loaders
     train_loader = DataLoader(

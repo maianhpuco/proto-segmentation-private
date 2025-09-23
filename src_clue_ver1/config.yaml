@@ -1,76 +1,61 @@
-# =============================================================================
-# PROTOTYPE SEGMENTATION CONFIGURATION
-# =============================================================================
-# This is a simplified configuration file for prototype-based semantic segmentation
-# Replace the complex GIN configuration with easy-to-understand YAML format
-# =============================================================================
-
-# Model Architecture Configuration
-model:
-  base_architecture: "deeplabv2_resnet101"  # Backbone: resnet18, resnet50, resnet101, vgg16, vgg19, densenet121
-  pretrained: true                          # Use ImageNet pretrained weights
-  prototype_shape: [190, 64, 1, 1]         # [num_prototypes, feature_dim, height, width]
-  num_classes: 19                           # Number of output classes
-  prototype_activation_function: "log"      # Activation: log, linear
-  add_on_layers_type: "deeplab_simple"     # Type: bottleneck, deeplab_simple
-
-# Training Configuration
-training:
-  # Training Phases (steps)
-  warmup_steps: 15000      # Phase 0: Warmup training steps
-  joint_steps: 150000      # Phase 1: Joint training steps  
-  finetune_steps: 10000    # Phase 2: Last layer fine-tuning steps
-  
-  # Batch Sizes
-  warmup_batch_size: 2     # Batch size for warmup phase
-  joint_batch_size: 2      # Batch size for joint training
-  
-  # Learning Rates
-  warmup_lr_add_on_layers: 0.00025      # LR for add-on layers in warmup
-  warmup_lr_prototype_vectors: 0.00025  # LR for prototypes in warmup
-  warmup_weight_decay: 0.0005           # Weight decay for warmup
-  
-  joint_lr_features: 0.000025           # LR for backbone features in joint training
-  joint_lr_add_on_layers: 0.00025       # LR for add-on layers in joint training
-  joint_lr_prototype_vectors: 0.00025   # LR for prototypes in joint training
-  joint_weight_decay: 0.0005            # Weight decay for joint training
-  
-  last_layer_lr: 0.00001                # LR for last layer fine-tuning
-  
-  # Loss Weights
-  loss_weight_cross_entropy: 1.0        # Cross-entropy loss weight
-  loss_weight_l1: 0.0001                # L1 regularization weight
-  loss_weight_kld: 0.25                 # KLD loss weight for prototype diversity
-  
-  # Training Options
-  poly_lr_power: 0.9                    # Polynomial LR decay power
-  iter_size: 5                          # Gradient accumulation steps
-  ignore_void_class: true               # Ignore void class (0) in loss
-  early_stopping_patience: 100          # Early stopping patience for last layer
-
-# Dataset Configuration
 dataset:
-  name: "cityscapes"                    # Dataset: cityscapes, pascal
-  window_size: [513, 513]              # Input image size [height, width]
-  mean: [0.485, 0.456, 0.406]         # ImageNet normalization mean
-  std: [0.229, 0.224, 0.225]          # ImageNet normalization std
-  scales: [0.5, 1.5]                   # Random scaling range
-  image_margin_size: 0                 # Image margin size
-  only_19_from_cityscapes: true        # Use only 19 classes from Cityscapes
-  
-  # Data Loading
-  dataloader_n_jobs: 8                 # Number of workers for data loading
-  train_key: "train"                   # Training split key
-
-# System Configuration
-system:
-  random_seed: 20220227                # Random seed for reproducibility
-  gpus: 1                              # Number of GPUs to use
-  load_coco: false                     # Load COCO pretrained weights instead of ImageNet
-  start_checkpoint: ""                 # Path to checkpoint to resume from
-
-# Paths
+  dataloader_n_jobs: 8
+  image_margin_size: 0
+  mean:
+  - 0.485
+  - 0.456
+  - 0.406
+  name: cityscapes
+  only_19_from_cityscapes: true
+  scales:
+  - 0.5
+  - 1.5
+  std:
+  - 0.229
+  - 0.224
+  - 0.225
+  train_key: train
+  window_size:
+  - 513
+  - 513
+model:
+  add_on_layers_type: deeplab_simple
+  base_architecture: deeplabv2_resnet101
+  num_classes: 19
+  pretrained: true
+  prototype_activation_function: log
+  prototype_shape:
+  - 190
+  - 64
+  - 1
+  - 1
 paths:
-  data_dir: "./data"                   # Directory containing datasets
-  results_dir: "./results"             # Directory to save results
-  model_dir: "./models"                # Directory to save models
+  data_dir: /project/hnguyen2/mvu9/datasets/cityscapes
+  model_dir: ./models
+  results_dir: ./results
+system:
+  gpus: 1
+  load_coco: false
+  random_seed: 20220227
+  start_checkpoint: ''
+training:
+  early_stopping_patience: 100
+  finetune_steps: 10000
+  ignore_void_class: true
+  iter_size: 5
+  joint_batch_size: 2
+  joint_lr_add_on_layers: 0.00025
+  joint_lr_features: 2.5e-05
+  joint_lr_prototype_vectors: 0.00025
+  joint_steps: 150000
+  joint_weight_decay: 0.0005
+  last_layer_lr: 1.0e-05
+  loss_weight_cross_entropy: 1.0
+  loss_weight_kld: 0.25
+  loss_weight_l1: 0.0001
+  poly_lr_power: 0.9
+  warmup_batch_size: 2
+  warmup_lr_add_on_layers: 0.00025
+  warmup_lr_prototype_vectors: 0.00025
+  warmup_steps: 15000
+  warmup_weight_decay: 0.0005
