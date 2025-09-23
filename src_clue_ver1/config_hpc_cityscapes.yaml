@@ -1,0 +1,68 @@
+# =============================================================================
+# HPC TRAINING CONFIG (Cityscapes)
+# =============================================================================
+
+# Model Architecture Configuration
+model:
+  base_architecture: "deeplabv2_resnet101"
+  pretrained: true
+  prototype_shape: [190, 64, 1, 1]
+  num_classes: 19
+  prototype_activation_function: "log"
+  add_on_layers_type: "deeplab_simple"
+
+# Training Configuration
+training:
+  warmup_steps: 15000
+  joint_steps: 150000
+  finetune_steps: 10000
+
+  warmup_batch_size: 2
+  joint_batch_size: 2
+
+  warmup_lr_add_on_layers: 0.00025
+  warmup_lr_prototype_vectors: 0.00025
+  warmup_weight_decay: 0.0005
+
+  joint_lr_features: 0.000025
+  joint_lr_add_on_layers: 0.00025
+  joint_lr_prototype_vectors: 0.00025
+  joint_weight_decay: 0.0005
+
+  last_layer_lr: 0.00001
+
+  loss_weight_cross_entropy: 1.0
+  loss_weight_l1: 0.0001
+  loss_weight_kld: 0.25
+
+  poly_lr_power: 0.9
+  iter_size: 5
+  ignore_void_class: true
+  early_stopping_patience: 100
+
+# Dataset Configuration (YOUR CLUSTER PATHS)
+dataset:
+  name: "cityscapes"
+  window_size: [513, 513]
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  scales: [0.5, 1.5]
+  image_margin_size: 0
+  only_19_from_cityscapes: true
+  dataloader_n_jobs: 8
+  train_key: "train"
+
+# System / Runtime
+system:
+  random_seed: 20240923
+  gpus: 1
+  load_coco: false
+  start_checkpoint: ""
+
+# Paths (ADJUST results/model dirs as needed)
+paths:
+  data_dir: "/project/hnguyen2/mvu9/datasets/cityscapes"
+  results_dir: "/project/hnguyen2/mvu9/results/proto_seg_v1"
+  model_dir: "/project/hnguyen2/mvu9/models/proto_seg_v1"
+
+
